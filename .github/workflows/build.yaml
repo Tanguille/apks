@@ -10,13 +10,13 @@ env:
 jobs:
   keepalive:
     # Public repos stop scheduled runs after 60 idle days; re-enabling resets that.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     permissions:
       actions: write
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow enable build.yaml
+        run: gh workflow enable "$(basename "${GITHUB_WORKFLOW_REF%@*}")"
 
   f1tv:
     runs-on: ubuntu-latest
