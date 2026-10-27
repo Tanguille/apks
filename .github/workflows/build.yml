@@ -3,6 +3,8 @@ on:
   schedule: [{ cron: "0 6 * * *" }]
   workflow_dispatch:
 permissions: {}
+env:
+  GH_REPO: ${{ github.repository }}
 # Tags are the APK's exact versionName and titles start with the app name, so Obtainium
 # can track each app here with a title filter and "fallback to older releases".
 jobs:
@@ -14,7 +16,7 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable"
+        run: gh workflow enable build.yml
 
   f1tv:
     runs-on: ubuntu-latest
@@ -25,19 +27,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release download -R Alexvbp/f1tv-4k-patch -p '*.apkm' -O in.apkm
+          utag=$(gh release view -R Alexvbp/f1tv-4k-patch --json tagName -q .tagName)
+          grep -qxF "Upstream $utag" <(gh api "repos/$GH_REPO/releases" --jq '.[].body') && exit 0
+          gh release download "$utag" -R Alexvbp/f1tv-4k-patch -p '*.apkm' -O in.apkm
           unzip -q in.apkm -d in
-          aapt2=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
-          ver=$("$aapt2" dump badging in/base.apk | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          ver=$("$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer" manifest version-name in/base.apk)
           [[ $ver =~ ^[0-9][0-9A-Za-z._-]*$ ]]
-          gh release view "$ver" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          gh release view "$ver" >/dev/null 2>&1 && exit 0
           # Obtainium installs the file named after the app id first, so only the base may carry it.
-          # Splits fixed to one 32-bit, English, xhdpi TV.
           mkdir out
           cp in/base.apk out/com.formulaone.production.apk
-          for s in armeabi_v7a en xhdpi; do cp "in/com.formulaone.production.config.$s.apk" "out/split_$s.apk"; done
-          (cd out && zip -q -0 ../f1tv.apkm ./*.apk)
-          gh release create "$ver" f1tv.apkm -R "$GITHUB_REPOSITORY" --title "F1 TV $ver" --notes ""
+          for f in in/com.formulaone.production.config.*.apk; do cp "$f" "out/split_${f##*.config.}"; done
+          zip -q -0 -j f1tv.apkm out/*.apk
+          gh release create "$ver" f1tv.apkm --title "F1 TV $ver" --notes "Upstream $utag"
 
   launcher-build:
     # Runs upstream's Gradle code, so it never sees a write token or the signing key.
@@ -54,15 +56,18 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(gh release view -R Gathin23/cleanyourtv --json tagName -q .tagName)
-          git clone -q --depth 1 --branch "$tag" https://github.com/Gathin23/cleanyourtv src
-          ver=$(sed -n "s/.*versionName '\([^']*\)'.*/\1/p" src/launcher/app/build.gradle)
+          ver=$(gh api "repos/Gathin23/cleanyourtv/contents/launcher/app/build.gradle?ref=$tag" -H 'Accept: application/vnd.github.raw' |
+            sed -n "s/.*versionName '\([^']*\)'.*/\1/p")
           [[ $ver =~ ^[0-9][0-9A-Za-z._-]*$ ]]
-          gh release view "$ver" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          gh release view "$ver" >/dev/null 2>&1 && exit 0
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - if: steps.check.outputs.ver
-        working-directory: src/launcher
-        run: JAVA_HOME="$JAVA_HOME_17_X64" ./gradlew assembleRelease -q --console=plain
+        env:
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          git clone -q --depth 1 --branch "$TAG" https://github.com/Gathin23/cleanyourtv src
+          cd src/launcher && JAVA_HOME="$JAVA_HOME_17_X64" ./gradlew assembleRelease -q
       - if: steps.check.outputs.ver
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -91,4 +96,4 @@ jobs:
           base64 -d <<<"$KEYSTORE" > ks.p12
           apksigner=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
           "$apksigner" sign --ks ks.p12 --ks-pass pass:android --out cleanyourtv.apk app-release.apk
-          gh release create "$VER" cleanyourtv.apk -R "$GITHUB_REPOSITORY" --title "CleanYourTV $VER" --notes "Upstream $TAG"
+          gh release create "$VER" cleanyourtv.apk --title "CleanYourTV $VER" --notes "Upstream $TAG"
