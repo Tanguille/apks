@@ -1,0 +1,29 @@
+name: build
+on:
+  schedule: [{ cron: "0 6 * * *" }]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          set -euo pipefail
+          # Public repos stop scheduled runs after 60 idle days; re-enabling resets that.
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/enable"
+          gh release download -R Alexvbp/f1tv-4k-patch -p '*.apkm' -O in.apkm
+          unzip -q in.apkm -d in
+          aapt2=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          ver=$("$aapt2" dump badging in/base.apk | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          gh release view "$ver" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          # Obtainium installs the file named after the app id first, so only the base may carry it.
+          # Splits fixed to one 32-bit, English, xhdpi TV.
+          mkdir out
+          cp in/base.apk out/com.formulaone.production.apk
+          for s in armeabi_v7a en xhdpi; do cp "in/com.formulaone.production.config.$s.apk" "out/split_$s.apk"; done
+          (cd out && zip -q -0 ../f1tv.apkm ./*.apk)
+          gh release create "$ver" f1tv.apkm -R "$GITHUB_REPOSITORY" --title "$ver" --notes ""
